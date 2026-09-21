@@ -11,6 +11,7 @@ Examples:
   cryptosec -e notes.txt              encrypt a file, pick the scheme interactively
   cryptosec -e ~/documents            pack a directory into one encrypted container
   cryptosec -d notes.txt.csec         decrypt again
+  cryptosec -k -e notes.txt           encrypt but keep the original alongside
   cryptosec --algo ecc --key work -e report.pdf
   cryptosec keygen work -t ecc        create a key pair named 'work'
   cryptosec keys                      list the key pairs in the key store
@@ -60,7 +61,11 @@ pub struct Cli {
     #[arg(long)]
     pub no_verify: bool,
 
-    /// Remove the source after a verified encryption
+    /// Leave the input in place instead of replacing it
+    #[arg(short = 'k', long)]
+    pub keep: bool,
+
+    /// Overwrite the source with random bytes before removing it
     #[arg(long)]
     pub shred: bool,
 

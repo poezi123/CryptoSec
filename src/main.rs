@@ -65,6 +65,7 @@ fn run() -> Result<()> {
         password_stdin: cli.password_stdin,
         force: cli.force,
         verify: !cli.no_verify,
+        keep: cli.keep,
         shred: cli.shred,
         quiet: cli.quiet,
     };

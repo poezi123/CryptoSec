@@ -85,7 +85,7 @@ pub fn open(path: &Path) -> Result<()> {
     ops::info(path)?;
     if ui::interactive() {
         println!();
-        if ui::confirm("Decrypt this container now?", true)? {
+        if ui::confirm("Decrypt this container and replace it?", true)? {
             let opts = Options {
                 output: None,
                 scheme: None,
@@ -93,6 +93,7 @@ pub fn open(path: &Path) -> Result<()> {
                 password_stdin: false,
                 force: false,
                 verify: false,
+                keep: false,
                 shred: false,
                 quiet: false,
             };

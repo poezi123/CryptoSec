@@ -22,6 +22,13 @@ extension
 A directory is packed into a tar archive first, so the tree, its permissions
 and its symlinks survive the round trip.
 .PP
+Encrypting replaces the input and decrypting replaces the container, so a
+plaintext copy is not left next to its encrypted version. The source is only
+removed after the finished container has been read back and compared against
+it, byte for byte for a file and entry by entry for a directory. Use
+.B \-k
+to keep the input instead.
+.PP
 Every container starts with a few readable lines. Anyone who opens it in an
 editor sees
 .B "Encrypted by CryptoSec"
@@ -62,11 +69,16 @@ scripts; the password may end up in your shell history.
 .BR \-f ", " \-\-force
 Overwrite an existing output path.
 .TP
+.BR \-k ", " \-\-keep
+Leave the input in place instead of replacing it.
+.TP
 .B \-\-no\-verify
-Skip the read\-back check that normally runs after encrypting.
+Skip the read\-back check that normally runs after encrypting. The input is
+then kept, because nothing was verified.
 .TP
 .B \-\-shred
-Remove the source after the read\-back check succeeded. Best effort only; see
+Overwrite the source with random bytes before removing it. Best effort only;
+see
 .BR "SECURITY NOTES" .
 .TP
 .BR \-q ", " \-\-quiet
@@ -108,10 +120,12 @@ Not hidden by the format: the size of the payload, the time of encryption, the
 scheme in use and, for key pair containers, the fingerprint of the recipient.
 The original name is stored inside the encrypted part.
 .PP
+Removing a source unlinks it and leaves the old blocks on the disk until they
+are reused.
 .B \-\-shred
-overwrites the file contents once before unlinking. On SSDs, copy\-on\-write
-filesystems such as Btrfs or ZFS, and anything with snapshots, older copies of
-the data can still exist afterwards.
+overwrites the contents once first. On SSDs, copy\-on\-write filesystems such
+as Btrfs or ZFS, and anything with snapshots, older copies of the data can
+still exist afterwards.
 .PP
 Losing a private key or forgetting a password means losing the data. There is
 no recovery path and none can be added.
@@ -122,6 +136,7 @@ no recovery path and none can be added.
 cryptosec \-e notes.txt
 cryptosec \-e ~/documents
 cryptosec \-d notes.txt.csec
+cryptosec \-k \-e notes.txt
 cryptosec keygen work \-t ecc
 cryptosec \-\-algo ecc \-\-key work \-e report.pdf
 .fi

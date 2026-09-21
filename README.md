@@ -44,6 +44,7 @@ Needs `cargo` (`pacman -S rust`, `apt install cargo`) and, on Arch,
 ```
 cryptosec -e PATH            encrypt a file or directory
 cryptosec -d PATH            decrypt a container
+cryptosec -k -e PATH         encrypt but keep the original alongside
 cryptosec --info PATH        show what a container holds
 cryptosec keygen NAME -t ecc create a key pair
 cryptosec keys               list the key store
@@ -53,10 +54,19 @@ A directory is packed into a tar archive first, so permissions, symlinks and
 empty directories survive. The container is always written next to the input
 as `NAME.csec`; `-o` puts it somewhere else.
 
-The source is never touched. After writing a container, cryptosec reads it
-back and compares it against the original before reporting success. Pass
-`--shred` if you want the source removed after that check, or `--no-verify`
-if you would rather skip it.
+Encrypting replaces the input and decrypting replaces the container, so a
+plaintext copy never stays behind next to its encrypted version.
+
+Nothing is deleted on trust. After writing a container, cryptosec reads it
+back through the normal decryption path and holds it against the original:
+byte for byte for a file, and entry by entry for a directory, including file
+contents, symlink targets and the number of entries. Only if all of that
+matches does the source go away. If the check finds anything at all, the
+container is discarded and the source stays.
+
+`-k` keeps the input in place. `--no-verify` skips the check, and then keeps
+the input as well, because nothing was proven. `--shred` overwrites the source
+with random bytes before removing it.
 
 Non-interactive use:
 
@@ -106,9 +116,10 @@ The payload size, the time of encryption, the scheme in use and, for key pair
 containers, the recipient fingerprint. If that matters, pad the input or
 encrypt inside an archive of a fixed size.
 
-`--shred` overwrites the file contents once and unlinks it. On SSDs and on
-copy-on-write filesystems such as Btrfs or ZFS, older copies of the data can
-survive that. It is a convenience, not a guarantee.
+Removing the source unlinks it, which leaves the old blocks on the disk until
+they are reused. `--shred` overwrites the contents once first, but on SSDs and
+on copy-on-write filesystems such as Btrfs or ZFS older copies can still
+survive. Treat it as a convenience, not a guarantee.
 
 Losing a private key or forgetting a password means the data is gone. There is
 no recovery path, and adding one would defeat the purpose.
@@ -123,7 +134,7 @@ file manager shows what it is and offers to decrypt it.
 
 ```
 make build     # cargo build --release --locked
-make test      # integration tests: round trips, tampering, truncation, key modes
+make test      # round trips, tampering, truncation, key modes, replace rules
 make install   # honours PREFIX and DESTDIR
 ```
 

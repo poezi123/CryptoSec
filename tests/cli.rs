@@ -86,7 +86,7 @@ fn password_roundtrip_across_chunk_boundaries() {
             Some(PASS),
         );
         assert!(ok, "encrypt {len} failed: {log}");
-        fs::remove_file(&src).unwrap();
+        assert!(!src.exists(), "the source survived encryption at {len}");
 
         let (ok, log) = sb.run(&["-q", "--password-stdin", "-d", &container], Some(PASS));
         assert!(ok, "decrypt {len} failed: {log}");
@@ -117,16 +117,19 @@ fn directory_roundtrip_keeps_the_tree() {
     let sb = Sandbox::new("dir");
     let dir = sb.work().join("tree");
     fs::create_dir_all(dir.join("sub/deep")).unwrap();
+    fs::create_dir(dir.join("empty")).unwrap();
     fs::write(dir.join("one.txt"), "one").unwrap();
     fs::write(dir.join("sub/two.txt"), "two").unwrap();
     write_bytes(&dir.join("sub/deep/three.bin"), 300_000);
+    std::os::unix::fs::symlink("one.txt", dir.join("link.txt")).unwrap();
+    std::os::unix::fs::symlink("nowhere", dir.join("dangling")).unwrap();
 
     let (ok, log) = sb.run(
         &["-q", "--algo", "chacha", "--password-stdin", "-e", "tree"],
         Some(PASS),
     );
     assert!(ok, "{log}");
-    fs::remove_dir_all(&dir).unwrap();
+    assert!(!dir.exists(), "the source tree survived encryption");
 
     let (ok, log) = sb.run(&["-q", "--password-stdin", "-d", "tree.csec"], Some(PASS));
     assert!(ok, "{log}");
@@ -135,6 +138,15 @@ fn directory_roundtrip_keeps_the_tree() {
     assert_eq!(
         fs::metadata(dir.join("sub/deep/three.bin")).unwrap().len(),
         300_000
+    );
+    assert!(dir.join("empty").is_dir());
+    assert_eq!(
+        fs::read_link(dir.join("link.txt")).unwrap(),
+        Path::new("one.txt")
+    );
+    assert_eq!(
+        fs::read_link(dir.join("dangling")).unwrap(),
+        Path::new("nowhere")
     );
 }
 
@@ -146,7 +158,6 @@ fn wrong_password_is_rejected() {
         &["-q", "--algo", "aes", "--password-stdin", "-e", "a.txt"],
         Some(PASS),
     );
-    fs::remove_file(sb.work().join("a.txt")).unwrap();
     let (ok, log) = sb.run(
         &["-q", "--password-stdin", "-d", "a.txt.csec"],
         Some("not the password\n"),
@@ -154,6 +165,10 @@ fn wrong_password_is_rejected() {
     assert!(!ok);
     assert!(log.contains("wrong password"), "{log}");
     assert!(!sb.work().join("a.txt").exists());
+    assert!(
+        sb.work().join("a.txt.csec").exists(),
+        "a failed decrypt must not remove the container"
+    );
 }
 
 #[test]
@@ -231,7 +246,7 @@ fn keypair_roundtrip_ecc_and_mlkem() {
         let out = format!("{name}.csec");
         let (ok, log) = sb.run(
             &[
-                "-q", "--algo", algo, "--key", name, "-e", "a.bin", "-o", &out,
+                "-q", "-k", "--algo", algo, "--key", name, "-e", "a.bin", "-o", &out,
             ],
             None,
         );
@@ -257,7 +272,7 @@ fn a_foreign_key_cannot_open_the_container() {
     );
     fs::write(sb.work().join("a.txt"), "secret").unwrap();
     let (ok, _) = sb.run(
-        &["-q", "--algo", "ecc", "--key", "alice", "-e", "a.txt"],
+        &["-q", "-k", "--algo", "ecc", "--key", "alice", "-e", "a.txt"],
         None,
     );
     assert!(ok);
@@ -307,11 +322,131 @@ fn keypair_roundtrip_rsa() {
     write_bytes(&sb.work().join("a.bin"), 100_000);
     let original = fs::read(sb.work().join("a.bin")).unwrap();
     let (ok, log) = sb.run(
-        &["-q", "--algo", "rsa", "--key", "carol", "-e", "a.bin"],
+        &["-q", "-k", "--algo", "rsa", "--key", "carol", "-e", "a.bin"],
         None,
     );
     assert!(ok, "{log}");
     let (ok, log) = sb.run(&["-q", "-d", "a.bin.csec", "-o", "back.bin"], None);
     assert!(ok, "{log}");
     assert_eq!(fs::read(sb.work().join("back.bin")).unwrap(), original);
+}
+
+#[test]
+fn encrypting_replaces_the_source_and_decrypting_replaces_the_container() {
+    let sb = Sandbox::new("replace");
+    let plain = sb.work().join("a.txt");
+    let container = sb.work().join("a.txt.csec");
+    fs::write(&plain, "round trip").unwrap();
+
+    let (ok, log) = sb.run(
+        &["-q", "--algo", "aes", "--password-stdin", "-e", "a.txt"],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert!(!plain.exists(), "plaintext left behind");
+    assert!(container.exists());
+
+    let (ok, log) = sb.run(&["-q", "--password-stdin", "-d", "a.txt.csec"], Some(PASS));
+    assert!(ok, "{log}");
+    assert_eq!(fs::read_to_string(&plain).unwrap(), "round trip");
+    assert!(!container.exists(), "container left behind");
+}
+
+#[test]
+fn keep_leaves_the_input_in_place() {
+    let sb = Sandbox::new("keep");
+    fs::write(sb.work().join("a.txt"), "hello").unwrap();
+    let (ok, log) = sb.run(
+        &[
+            "-q",
+            "-k",
+            "--algo",
+            "aes",
+            "--password-stdin",
+            "-e",
+            "a.txt",
+        ],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert_eq!(
+        fs::read_to_string(sb.work().join("a.txt")).unwrap(),
+        "hello"
+    );
+
+    let (ok, log) = sb.run(
+        &["-q", "-k", "-f", "--password-stdin", "-d", "a.txt.csec"],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert!(sb.work().join("a.txt.csec").exists());
+}
+
+#[test]
+fn skipping_the_check_keeps_the_source() {
+    let sb = Sandbox::new("noverify");
+    fs::write(sb.work().join("a.txt"), "hello").unwrap();
+    let (ok, log) = sb.run(
+        &[
+            "--no-verify",
+            "--algo",
+            "aes",
+            "--password-stdin",
+            "-e",
+            "a.txt",
+        ],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert!(
+        sb.work().join("a.txt").exists(),
+        "nothing was verified, so the source must stay"
+    );
+    assert!(log.contains("nothing was verified"), "{log}");
+}
+
+#[test]
+fn shred_and_keep_are_rejected_together() {
+    let sb = Sandbox::new("conflict");
+    fs::write(sb.work().join("a.txt"), "hello").unwrap();
+    let (ok, log) = sb.run(
+        &[
+            "-q",
+            "-k",
+            "--shred",
+            "--algo",
+            "aes",
+            "--password-stdin",
+            "-e",
+            "a.txt",
+        ],
+        Some(PASS),
+    );
+    assert!(!ok);
+    assert!(log.contains("contradict"), "{log}");
+    assert!(sb.work().join("a.txt").exists());
+}
+
+#[test]
+fn shred_removes_the_source_after_the_check() {
+    let sb = Sandbox::new("shred");
+    write_bytes(&sb.work().join("a.bin"), 50_000);
+    let (ok, log) = sb.run(
+        &[
+            "-q",
+            "--shred",
+            "--algo",
+            "aes",
+            "--password-stdin",
+            "-e",
+            "a.bin",
+        ],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert!(!sb.work().join("a.bin").exists());
+
+    let (ok, log) = sb.run(&["-q", "--password-stdin", "-d", "a.bin.csec"], Some(PASS));
+    assert!(ok, "{log}");
+    assert_eq!(fs::metadata(sb.work().join("a.bin")).unwrap().len(), 50_000);
 }

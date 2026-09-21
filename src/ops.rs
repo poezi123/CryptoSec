@@ -23,6 +23,7 @@ pub struct Options {
     pub password_stdin: bool,
     pub force: bool,
     pub verify: bool,
+    pub keep: bool,
     pub shred: bool,
     pub quiet: bool,
 }
@@ -99,6 +100,13 @@ fn ensure_free(path: &Path, force: bool) -> Result<()> {
 // ------------------------------------------------------------------ encrypt
 
 pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
+    if opts.shred && opts.keep {
+        bail!("--shred and --keep contradict each other");
+    }
+    if opts.shred && !opts.verify {
+        bail!("--shred needs the read-back check, drop --no-verify");
+    }
+
     let src = input
         .canonicalize()
         .with_context(|| format!("cannot open {}", input.display()))?;
@@ -264,14 +272,24 @@ pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
         }
     }
 
-    if opts.shred {
-        if !opts.verify {
-            bail!("--shred needs the read-back check, drop --no-verify");
+    // The source only goes away once the container has been read back and
+    // compared against it.
+    let note = if opts.keep {
+        "source kept (-k)"
+    } else if !opts.verify {
+        "source kept: nothing was verified (--no-verify)"
+    } else {
+        sync_parent(&out)?;
+        if opts.shred {
+            shred(&src, kind)?;
+            "source overwritten and removed"
+        } else {
+            remove(&src, kind)?;
+            "source removed"
         }
-        shred(&src, kind)?;
-        if !opts.quiet {
-            println!("  source removed");
-        }
+    };
+    if !opts.quiet {
+        println!("  {note}");
     }
     Ok(())
 }
@@ -347,9 +365,102 @@ fn verify(
     }
     check.zeroize();
     match kind {
-        Kind::File => compare(&mut dec, &mut BufReader::new(File::open(src)?))?,
-        Kind::Directory => {
+        Kind::File => {
+            compare(&mut dec, &mut BufReader::new(File::open(src)?))?;
             io::copy(&mut dec, &mut io::sink())?;
+        }
+        Kind::Directory => verify_directory(&mut dec, src, name)?,
+    }
+    Ok(())
+}
+
+/// Walks the archive that was just written and holds every entry against the
+/// directory on disk. Nothing is deleted on the strength of a weaker check.
+fn verify_directory<R: Read>(dec: &mut R, src: &Path, root: &str) -> Result<()> {
+    let mut seen = 0usize;
+    let mut archive = tar::Archive::new(dec);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let mut parts = path.components();
+        let first = parts
+            .next()
+            .ok_or_else(|| anyhow!("the archive holds an entry without a path"))?;
+        if first.as_os_str() != root {
+            bail!(
+                "the archive holds an entry outside {root}: {}",
+                path.display()
+            );
+        }
+        let rest = parts.as_path();
+        let target = if rest.as_os_str().is_empty() {
+            src.to_path_buf()
+        } else {
+            src.join(rest)
+        };
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_dir() {
+            if !target.is_dir() {
+                bail!("{} is in the archive but not on disk", path.display());
+            }
+        } else if entry_type.is_symlink() {
+            let stored = entry
+                .link_name()?
+                .ok_or_else(|| anyhow!("{} has no link target", path.display()))?
+                .into_owned();
+            if fs::read_link(&target)? != stored {
+                bail!("the symlink {} points somewhere else now", path.display());
+            }
+            seen += 1;
+        } else {
+            let mut disk = BufReader::new(File::open(&target).with_context(|| {
+                format!("{} is in the archive but not on disk", path.display())
+            })?);
+            compare(&mut entry, &mut disk)
+                .with_context(|| format!("{} differs from the archive", path.display()))?;
+            seen += 1;
+        }
+    }
+    let dec = archive.into_inner();
+    io::copy(dec, &mut io::sink())?;
+
+    let on_disk = count_entries(src)?;
+    if seen != on_disk {
+        bail!("the archive holds {seen} entries, the directory {on_disk}");
+    }
+    Ok(())
+}
+
+/// Everything that is not a directory, so symlinks count as themselves.
+fn count_entries(root: &Path) -> Result<usize> {
+    let mut count = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if fs::symlink_metadata(&path)?.is_dir() {
+                stack.push(path);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn remove(path: &Path, kind: Kind) -> Result<()> {
+    match kind {
+        Kind::File => fs::remove_file(path)?,
+        Kind::Directory => fs::remove_dir_all(path)?,
+    }
+    Ok(())
+}
+
+/// Makes a rename durable before the only other copy of the data is deleted.
+fn sync_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
         }
     }
     Ok(())
@@ -468,8 +579,19 @@ pub fn decrypt(input: &Path, opts: &Options) -> Result<()> {
         }
     }
 
+    // Every chunk was authenticated on the way out, so the container has done
+    // its job and is replaced by what it held.
+    let note = if opts.keep {
+        "container kept (-k)"
+    } else {
+        sync_parent(&out)?;
+        fs::remove_file(&src).with_context(|| format!("cannot remove {}", src.display()))?;
+        "container removed"
+    };
+
     if !opts.quiet {
         println!("  restored {}", out_display.display());
+        println!("  {note}");
     }
     Ok(())
 }
@@ -638,4 +760,89 @@ fn shred_file(path: &Path) -> Result<()> {
     drop(f);
     fs::remove_file(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static N: AtomicU32 = AtomicU32::new(0);
+
+    fn scratch_dir() -> PathBuf {
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("cryptosec-ops-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("tree/sub")).unwrap();
+        fs::write(dir.join("tree/a.txt"), "aaa").unwrap();
+        fs::write(dir.join("tree/sub/b.bin"), vec![7u8; 4096]).unwrap();
+        std::os::unix::fs::symlink("a.txt", dir.join("tree/link")).unwrap();
+        dir
+    }
+
+    fn tar_of(dir: &Path) -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        b.follow_symlinks(false);
+        b.append_dir_all("tree", dir.join("tree")).unwrap();
+        b.finish().unwrap();
+        b.into_inner().unwrap()
+    }
+
+    #[test]
+    fn accepts_a_tree_that_still_matches() {
+        let dir = scratch_dir();
+        let archive = tar_of(&dir);
+        verify_directory(&mut Cursor::new(archive), &dir.join("tree"), "tree").unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_changed_file_contents() {
+        let dir = scratch_dir();
+        let archive = tar_of(&dir);
+        fs::write(dir.join("tree/a.txt"), "bbb").unwrap();
+        let err = verify_directory(&mut Cursor::new(archive), &dir.join("tree"), "tree")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("a.txt"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_file_the_archive_never_saw() {
+        let dir = scratch_dir();
+        let archive = tar_of(&dir);
+        fs::write(dir.join("tree/sub/late.txt"), "added after packing").unwrap();
+        let err = verify_directory(&mut Cursor::new(archive), &dir.join("tree"), "tree")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("entries"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_retargeted_symlink() {
+        let dir = scratch_dir();
+        let archive = tar_of(&dir);
+        fs::remove_file(dir.join("tree/link")).unwrap();
+        std::os::unix::fs::symlink("sub/b.bin", dir.join("tree/link")).unwrap();
+        let err = verify_directory(&mut Cursor::new(archive), &dir.join("tree"), "tree")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("symlink"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_a_file_that_disappeared() {
+        let dir = scratch_dir();
+        let archive = tar_of(&dir);
+        fs::remove_file(dir.join("tree/sub/b.bin")).unwrap();
+        let err = verify_directory(&mut Cursor::new(archive), &dir.join("tree"), "tree")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not on disk"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
