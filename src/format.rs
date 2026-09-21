@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 pub const MAGIC: &[u8] = b"CSEC\x01";
 /// First line of every container. Also used as the shared-mime-info magic.
 pub const BANNER: &str = "Encrypted by CryptoSec";
+pub const HOMEPAGE: &str = "https://github.com/poezi123/CryptoSec";
 pub const EXTENSION: &str = "csec";
 pub const CHUNK: usize = 1024 * 1024;
 pub const TAG: usize = 16;
@@ -21,7 +22,6 @@ pub struct Meta {
     pub recipient: Recipient,
     pub nonce_prefix: String,
     pub chunk_size: u32,
-    pub created: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,28 +120,16 @@ impl Kind {
     }
 }
 
-pub fn preamble(meta: &Meta, container_name: &str) -> String {
-    format!(
-        "{BANNER}\n\
-         ==============================================================\n\
-         \x20 Cipher    : {}\n\
-         \x20 Key mode  : {}\n\
-         \x20 Created   : {}\n\
-         \x20 Decrypt   : cryptosec -d {}\n\
-         ==============================================================\n\
-         The payload below is encrypted. Without the matching password\n\
-         or private key it cannot be recovered - not by this tool and\n\
-         not by anyone else.\n\n",
-        meta.cipher.label(),
-        meta.recipient.label(),
-        meta.created,
-        container_name,
-    )
+/// Deliberately short. Everything the tool needs to decrypt already sits in
+/// the header below, and repeating it here would only add metadata that is
+/// readable without a key.
+pub fn preamble() -> String {
+    format!("{BANNER}\nDecrypt with: cryptosec -d <this file>\nGet it at: {HOMEPAGE}\n\n")
 }
 
-pub fn write_header<W: Write>(out: &mut W, meta: &Meta, container_name: &str) -> Result<Vec<u8>> {
+pub fn write_header<W: Write>(out: &mut W, meta: &Meta) -> Result<Vec<u8>> {
     let json = serde_json::to_vec(meta)?;
-    out.write_all(preamble(meta, container_name).as_bytes())?;
+    out.write_all(preamble().as_bytes())?;
     out.write_all(MAGIC)?;
     out.write_all(&(json.len() as u32).to_le_bytes())?;
     out.write_all(&json)?;

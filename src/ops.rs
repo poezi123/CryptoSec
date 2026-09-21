@@ -141,11 +141,6 @@ pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
         None => sibling_of(input, &container, &out),
     };
     ensure_free(&out, opts.force)?;
-    let out_name = out
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("archive.csec")
-        .to_string();
 
     let scheme = match opts.scheme {
         Some(s) => s,
@@ -204,9 +199,6 @@ pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
         recipient,
         nonce_prefix: B64.encode(prefix),
         chunk_size: format::CHUNK as u32,
-        created: chrono::Utc::now()
-            .format("%Y-%m-%d %H:%M:%S UTC")
-            .to_string(),
     };
 
     let scratch = Scratch::file(scratch_path(&out, "part"));
@@ -217,7 +209,7 @@ pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
         .open(&scratch.path)
         .with_context(|| format!("cannot write next to {}", out.display()))?;
     let mut writer = BufWriter::new(file);
-    let meta_json = format::write_header(&mut writer, &meta, &out_name)?;
+    let meta_json = format::write_header(&mut writer, &meta)?;
     let sealer = Sealer::new(meta.cipher, &dek, prefix, format::aad(&meta_json));
     let mut enc = EncWriter::new(writer, sealer);
 
@@ -506,7 +498,6 @@ pub fn decrypt(input: &Path, opts: &Options) -> Result<()> {
         println!("{}", format::BANNER);
         println!("  cipher   {}", meta.cipher.label());
         println!("  key mode {}", meta.recipient.label());
-        println!("  created  {}", meta.created);
     }
 
     let mut dek = obtain_dek(&meta, opts)?;
@@ -702,7 +693,6 @@ pub fn info(path: &Path) -> Result<()> {
     println!("  file     {}", path.display());
     println!("  cipher   {}", meta.cipher.label());
     println!("  key mode {}", meta.recipient.label());
-    println!("  created  {}", meta.created);
     if let Some(fp) = meta.recipient.fingerprint() {
         match keys::find_by_fingerprint(fp)? {
             Some(k) => println!("  key      '{}' is in your key store", k.name),

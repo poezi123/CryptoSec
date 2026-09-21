@@ -110,6 +110,41 @@ fn container_starts_with_the_readable_banner() {
     let raw = fs::read(sb.work().join("a.txt.csec")).unwrap();
     assert!(raw.starts_with(b"Encrypted by CryptoSec"));
     assert!(!raw.windows(6).any(|w| w == b"secret"));
+
+    // Everything before the binary header is the readable part. It carries the
+    // banner, how to decrypt and where the tool comes from, and nothing else:
+    // no timestamp, no scheme, nothing that describes this particular file.
+    let magic = raw
+        .windows(5)
+        .position(|w| w == b"CSEC\x01")
+        .expect("header magic");
+    let preamble = String::from_utf8(raw[..magic].to_vec()).unwrap();
+    assert_eq!(
+        preamble,
+        "Encrypted by CryptoSec\n\
+         Decrypt with: cryptosec -d <this file>\n\
+         Get it at: https://github.com/poezi123/CryptoSec\n\n"
+    );
+}
+
+/// Containers written by 0.1.0 carry a "created" field that no longer exists.
+/// They must keep opening, or an upgrade would lock people out of their data.
+#[test]
+fn containers_from_the_previous_release_still_open() {
+    let sb = Sandbox::new("legacy");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy-0.1.0.csec");
+    let container = sb.work().join("legacy.txt.csec");
+    fs::copy(&fixture, &container).unwrap();
+
+    let (ok, log) = sb.run(
+        &["-q", "--password-stdin", "-d", "legacy.txt.csec"],
+        Some(PASS),
+    );
+    assert!(ok, "{log}");
+    assert_eq!(
+        fs::read_to_string(sb.work().join("legacy.txt")).unwrap(),
+        "legacy round trip\n"
+    );
 }
 
 #[test]

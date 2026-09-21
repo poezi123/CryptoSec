@@ -16,11 +16,11 @@ $ cryptosec -e notes.txt
 Opening the result in an editor does not show binary noise:
 
 ```
-$ head -4 notes.txt.csec
+$ cat notes.txt.csec
 Encrypted by CryptoSec
-==============================================================
-  Cipher    : AES-256-GCM
-  Key mode  : password (argon2id)
+Decrypt with: cryptosec -d <this file>
+Get it at: https://github.com/poezi123/CryptoSec
+...
 ```
 
 ## Install
@@ -99,10 +99,14 @@ matching private key is looked up by the fingerprint stored in the container.
 
 ```
 Encrypted by CryptoSec      readable banner, also used as the MIME magic
-...                         cipher, key mode, creation time
+Decrypt with / Get it at    two fixed lines, identical in every container
 CSEC\x01 | u32 | JSON       magic, length, header (salt, wrapped key, nonce)
 chunk 0 .. chunk n          1 MiB each, AES-GCM or ChaCha20-Poly1305
 ```
+
+The readable part is deliberately the same in every container. It says what
+the file is and where to get the tool, and nothing about this particular
+file.
 
 Each chunk gets its own nonce built from a random per-file prefix, a counter
 and a last-chunk flag, and is authenticated against a hash of the header.
@@ -112,9 +116,18 @@ record of the encrypted stream, not in the readable part.
 
 ## What it does not hide
 
-The payload size, the time of encryption, the scheme in use and, for key pair
-containers, the recipient fingerprint. If that matters, pad the input or
-encrypt inside an archive of a fixed size.
+The payload size, the scheme in use and, for key pair containers, the
+recipient fingerprint. If that matters, pad the input or encrypt inside an
+archive of a fixed size. No creation time is stored.
+
+The header also holds the salt, the nonces and the wrapped data key in the
+clear, and that is how it has to be. A salt is not a secret: its job is to
+stop precomputed tables and to keep two containers with the same password
+from being attacked together. Every design that stretches a password stores
+it in the open, from LUKS to age to `/etc/shadow`. The same goes for the
+scheme name. Anything cryptosec can read without a key, an attacker can read
+too, so nothing there is treated as secret. What protects the payload is the
+password and Argon2id, or the private key.
 
 Removing the source unlinks it, which leaves the old blocks on the disk until
 they are reused. `--shred` overwrites the contents once first, but on SSDs and
