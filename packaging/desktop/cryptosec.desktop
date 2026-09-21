@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CryptoSec
+Comment=Open a CryptoSec container
+Comment[de]=Einen CryptoSec-Container öffnen
+Exec=cryptosec open %f
+Icon=dialog-password
+Terminal=true
+NoDisplay=true
+MimeType=application/x-cryptosec;
+Categories=System;Security;

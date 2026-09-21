@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-cryptosec">
+    <comment>CryptoSec encrypted container</comment>
+    <comment xml:lang="de">Mit CryptoSec verschlüsselter Container</comment>
+    <generic-icon name="package-x-generic"/>
+    <glob pattern="*.csec"/>
+    <magic priority="60">
+      <match type="string" value="Encrypted by CryptoSec" offset="0"/>
+    </magic>
+  </mime-type>
+</mime-info>
