@@ -293,6 +293,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sha3",
  "tar",
  "x25519-dalek",
  "zeroize",
@@ -546,6 +547,7 @@ dependencies = [
  "kem",
  "rand_core",
  "sha3",
+ "zeroize",
 ]
 
 [[package]]

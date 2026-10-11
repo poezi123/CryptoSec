@@ -11,6 +11,7 @@ use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
+use sha3::Sha3_256;
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 use zeroize::Zeroize;
 
@@ -18,6 +19,41 @@ use crate::kdf;
 
 type MlEk = <MlKem768 as KemCore>::EncapsulationKey;
 type MlDk = <MlKem768 as KemCore>::DecapsulationKey;
+
+/// ML-KEM-768 sizes: encoded t-hat, encapsulation key, decapsulation key.
+const ML_T: usize = 1152;
+const ML_EK: usize = 1184;
+const ML_DK: usize = 2400;
+
+/// FIPS 203, 7.2: every 12 bit coefficient of t-hat must be below q = 3329.
+/// The ml-kem crate does not check this itself.
+fn check_ml_kem_public(ek: &[u8]) -> Result<()> {
+    if ek.len() != ML_EK {
+        bail!("damaged ML-KEM public key");
+    }
+    for c in ek[..ML_T].chunks_exact(3) {
+        let a = u16::from(c[0]) | (u16::from(c[1] & 0x0f) << 8);
+        let b = u16::from(c[1] >> 4) | (u16::from(c[2]) << 4);
+        if a >= 3329 || b >= 3329 {
+            bail!("invalid ML-KEM public key (coefficient out of range)");
+        }
+    }
+    Ok(())
+}
+
+/// FIPS 203, 7.3: dk = dk_PKE || ek || H(ek) || z, and the stored H(ek) must
+/// match the embedded ek.
+fn check_ml_kem_private(dk: &[u8]) -> Result<()> {
+    if dk.len() != ML_DK {
+        bail!("damaged ML-KEM private key");
+    }
+    let ek = &dk[ML_T..ML_T + ML_EK];
+    check_ml_kem_public(ek).context("damaged ML-KEM private key")?;
+    if Sha3_256::digest(ek).as_slice() != &dk[ML_T + ML_EK..ML_T + ML_EK + 32] {
+        bail!("damaged ML-KEM private key (hash check failed)");
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyAlgo {
@@ -92,6 +128,7 @@ impl PublicKey {
                 PublicKey::X25519(XPublic::from(arr))
             }
             KeyAlgo::MlKem768 => {
+                check_ml_kem_public(raw)?;
                 let enc = raw
                     .try_into()
                     .map_err(|_| anyhow!("damaged ML-KEM public key"))?;
@@ -140,6 +177,7 @@ impl PrivateKey {
                 PrivateKey::X25519(StaticSecret::from(arr))
             }
             KeyAlgo::MlKem768 => {
+                check_ml_kem_private(raw)?;
                 let enc = raw
                     .try_into()
                     .map_err(|_| anyhow!("damaged ML-KEM private key"))?;
@@ -507,5 +545,54 @@ impl Armor {
             headers,
             body,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ml_kem_pair() -> (Vec<u8>, Vec<u8>) {
+        let sk = generate(KeyAlgo::MlKem768).unwrap();
+        (sk.to_bytes().unwrap(), sk.public().to_bytes().unwrap())
+    }
+
+    #[test]
+    fn ml_kem_keys_round_trip() {
+        let (dk, ek) = ml_kem_pair();
+        let sk = PrivateKey::from_bytes(KeyAlgo::MlKem768, &dk).unwrap();
+        let pk = PublicKey::from_bytes(KeyAlgo::MlKem768, &ek).unwrap();
+        let dek = [7u8; 32];
+        let w = wrap(&pk, &dek).unwrap();
+        let back = unwrap(
+            &sk,
+            w.kem.as_deref(),
+            w.nonce.as_ref().map(|n| &n[..]),
+            &w.wrapped,
+        )
+        .unwrap();
+        assert_eq!(back, dek);
+    }
+
+    #[test]
+    fn ml_kem_public_key_out_of_range_is_refused() {
+        let (_, mut ek) = ml_kem_pair();
+        // First coefficient = 4095, above q.
+        ek[0] = 0xff;
+        ek[1] |= 0x0f;
+        assert!(PublicKey::from_bytes(KeyAlgo::MlKem768, &ek).is_err());
+    }
+
+    #[test]
+    fn ml_kem_private_key_with_wrong_hash_is_refused() {
+        let (dk, _) = ml_kem_pair();
+        for pos in [ML_T + ML_EK, ML_T + 10] {
+            let mut bad = dk.clone();
+            bad[pos] ^= 1;
+            assert!(
+                PrivateKey::from_bytes(KeyAlgo::MlKem768, &bad).is_err(),
+                "byte {pos}"
+            );
+        }
     }
 }

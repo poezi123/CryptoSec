@@ -27,6 +27,7 @@ rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+sha3 = "0.10"
 tar = "0.4"
 zeroize = { version = "1", features = ["zeroize_derive"] }
 
@@ -34,7 +35,7 @@ aes-gcm = "0.10"
 chacha20poly1305 = "0.10"
 rsa = { version = "0.9", features = ["sha2"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-ml-kem = "0.2"
+ml-kem = { version = "0.2", features = ["zeroize"] }
 
 [profile.release]
 opt-level = 3
