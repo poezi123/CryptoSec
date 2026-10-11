@@ -11,6 +11,7 @@ $ cryptosec -e notes.txt
   RSA-4096              key pair
   ECC / X25519          key pair
   ML-KEM-768            key pair, post-quantum
+  Radix (concept)       key pair, hybrid post-quantum, triple cascade
 ```
 
 Opening the result in an editor does not show binary noise:
@@ -84,9 +85,10 @@ cryptosec --algo ecc --key work -e report.pdf
 | RSA-4096 | AES-256-GCM | data key wrapped with RSA-OAEP (SHA-256) |
 | ECC / X25519 | AES-256-GCM | ephemeral X25519, HKDF-SHA256, AES-GCM key wrap |
 | ML-KEM-768 | AES-256-GCM | ML-KEM encapsulation, HKDF-SHA256, AES-GCM key wrap |
+| Radix (concept) | Radix-Cascade | X25519 + ML-KEM-768 hybrid, HKDF-SHA256, key wrap under Radix-Cascade |
 
-RSA and elliptic curves cannot encrypt bulk data directly, so the three key
-pair schemes all work the same way: a random 256 bit data key encrypts the
+RSA and elliptic curves cannot encrypt bulk data directly, so the key pair
+schemes all work the same way: a random 256 bit data key encrypts the
 payload, and only that key is wrapped for the recipient. This is the same
 hybrid construction that PGP, age and TLS use.
 
@@ -95,13 +97,35 @@ Key pairs live in `~/.config/cryptosec/keys` (`NAME.pub`, `NAME.key`, mode
 `--no-passphrase`. Encrypting only needs the public key; when decrypting, the
 matching private key is looked up by the fingerprint stored in the container.
 
+### Radix (concept)
+
+Radix is an experimental scheme. Each chunk passes through three layers:
+Radix-AEAD, a duplex construction over a new 512 bit ARX permutation, inside
+ChaCha20-Poly1305, inside AES-256-GCM. Every layer has its own key from
+HKDF-SHA256, and a 32 byte key commitment in front binds the chunk to exactly
+one key. The data key is exchanged with X25519 and ML-KEM-768 combined, so it
+stays secret while either of the two holds, including against a quantum
+computer that breaks X25519.
+
+The Radix permutation itself has not been reviewed by anyone outside this
+project. That is why it only ever sits innermost: as long as AES-256-GCM or
+ChaCha20-Poly1305 holds, a weakness in Radix exposes nothing. Radix
+containers are format version 2, so releases before Radix cannot open them.
+Each 1 MiB chunk grows by 80 bytes instead of 16, and the cascade runs at
+roughly an eighth of the speed of plain AES-GCM.
+
+```
+cryptosec keygen me -t radix
+cryptosec --algo radix --key me -e notes.txt
+```
+
 ## Container layout
 
 ```
 Encrypted by CryptoSec      readable banner, also used as the MIME magic
 Decrypt with / Get it at    two fixed lines, identical in every container
 CSEC\x01 | u32 | JSON       magic, length, header (salt, wrapped key, nonce)
-chunk 0 .. chunk n          1 MiB each, AES-GCM or ChaCha20-Poly1305
+chunk 0 .. chunk n          1 MiB each, AES-GCM, ChaCha20-Poly1305 or Radix-Cascade
 ```
 
 The readable part is deliberately the same in every container. It says what

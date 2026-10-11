@@ -41,6 +41,14 @@ the scheme is picked from a menu. The choices are AES\-256\-GCM and
 ChaCha20\-Poly1305 with a password, and RSA\-4096, X25519 or ML\-KEM\-768 with a
 key pair. The key pair schemes never encrypt the payload directly; they wrap a
 random 256 bit data key that AES\-256\-GCM then uses for the payload.
+.PP
+.B Radix (concept)
+is an experimental key pair scheme. The data key is exchanged with X25519 and
+ML\-KEM\-768 combined, and the payload passes through three layers:
+Radix\-AEAD over a new, not externally reviewed permutation, inside
+ChaCha20\-Poly1305, inside AES\-256\-GCM. Its security rests on the standard
+layers. Radix containers use format version 2 and cannot be opened by older
+releases.
 .SH OPTIONS
 .TP
 .BR \-e ", " \-\-encrypt " " \fIPATH\fR
@@ -57,7 +65,7 @@ Write the result here instead of next to the input.
 .TP
 .BI \-\-algo " SCHEME"
 One of
-.BR aes ", " chacha ", " rsa ", " ecc ", " mlkem .
+.BR aes ", " chacha ", " rsa ", " ecc ", " mlkem ", " radix .
 Skips the menu.
 .TP
 .BI \-\-key " NAME"
@@ -90,7 +98,7 @@ Print errors only.
 Create a key pair.
 .I TYPE
 is
-.BR rsa ", " ecc " or " mlkem .
+.BR rsa ", " ecc ", " mlkem " or " radix .
 The private key is protected with a passphrase unless
 .B \-\-no\-passphrase
 is given.
