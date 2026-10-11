@@ -485,3 +485,193 @@ fn shred_removes_the_source_after_the_check() {
     assert!(ok, "{log}");
     assert_eq!(fs::metadata(sb.work().join("a.bin")).unwrap().len(), 50_000);
 }
+
+// ------------------------------------------------------------ Radix (concept)
+
+fn radix_sandbox(tag: &str) -> Sandbox {
+    let sb = Sandbox::new(tag);
+    let (ok, log) = sb.run(
+        &["-q", "keygen", "rx", "-t", "radix", "--no-passphrase"],
+        None,
+    );
+    assert!(ok, "keygen radix: {log}");
+    sb
+}
+
+#[test]
+fn radix_roundtrip_across_chunk_boundaries() {
+    let sb = radix_sandbox("radix-chunks");
+    for len in [0usize, 1, 1048575, 1048576, 1048577, 2_500_000] {
+        let name = format!("r{len}.bin");
+        write_bytes(&sb.work().join(&name), len);
+        let original = fs::read(sb.work().join(&name)).unwrap();
+        let (ok, log) = sb.run(&["-q", "--algo", "radix", "--key", "rx", "-e", &name], None);
+        assert!(ok, "encrypt {len}: {log}");
+        assert!(!sb.work().join(&name).exists());
+        // No --key: the private key is found through the fingerprint.
+        let (ok, log) = sb.run(&["-q", "-d", &format!("{name}.csec")], None);
+        assert!(ok, "decrypt {len}: {log}");
+        assert_eq!(
+            fs::read(sb.work().join(&name)).unwrap(),
+            original,
+            "len {len}"
+        );
+    }
+}
+
+#[test]
+fn radix_containers_are_version_2_and_say_so() {
+    let sb = radix_sandbox("radix-info");
+    fs::write(sb.work().join("a.txt"), "secret").unwrap();
+    let (ok, log) = sb.run(
+        &["-k", "--algo", "radix", "--key", "rx", "-e", "a.txt"],
+        None,
+    );
+    assert!(ok, "{log}");
+    assert!(log.contains("Radix-Cascade (concept)"), "{log}");
+    let raw = fs::read(sb.work().join("a.txt.csec")).unwrap();
+    let text = String::from_utf8_lossy(&raw);
+    assert!(text.contains("\"version\":2"), "header is not version 2");
+    assert!(text.contains("\"cipher\":\"radix-cascade\""));
+    assert!(text.contains("\"mode\":\"radix-hybrid\""));
+    assert!(!text.contains("secret"));
+    let (ok, log) = sb.run(&["--info", "a.txt.csec"], None);
+    assert!(ok, "{log}");
+    assert!(log.contains("Radix hybrid key"), "{log}");
+    assert!(log.contains("'rx' is in your key store"), "{log}");
+}
+
+#[test]
+fn radix_directory_roundtrip() {
+    let sb = radix_sandbox("radix-dir");
+    let dir = sb.work().join("tree");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("one.txt"), "one").unwrap();
+    write_bytes(&dir.join("sub/big.bin"), 1_500_000);
+    let (ok, log) = sb.run(
+        &["-q", "--algo", "radix", "--key", "rx", "-e", "tree"],
+        None,
+    );
+    assert!(ok, "{log}");
+    assert!(!dir.exists());
+    let (ok, log) = sb.run(&["-q", "-d", "tree.csec"], None);
+    assert!(ok, "{log}");
+    assert_eq!(fs::read_to_string(dir.join("one.txt")).unwrap(), "one");
+    assert_eq!(
+        fs::metadata(dir.join("sub/big.bin")).unwrap().len(),
+        1_500_000
+    );
+}
+
+#[test]
+fn radix_detects_a_flipped_byte_anywhere_in_the_payload() {
+    let sb = radix_sandbox("radix-tamper");
+    write_bytes(&sb.work().join("a.bin"), 1_100_000);
+    let (ok, log) = sb.run(
+        &["-q", "-k", "--algo", "radix", "--key", "rx", "-e", "a.bin"],
+        None,
+    );
+    assert!(ok, "{log}");
+    let container = sb.work().join("a.bin.csec");
+    let clean = fs::read(&container).unwrap();
+    // Commitment of the first chunk, inside the first chunk, and the very end.
+    let magic = clean.windows(5).position(|w| w == b"CSEC\x01").unwrap();
+    let len = u32::from_le_bytes(clean[magic + 5..magic + 9].try_into().unwrap()) as usize;
+    let payload = magic + 9 + len;
+    for pos in [payload, payload + 5000, clean.len() - 1] {
+        let mut raw = clean.clone();
+        raw[pos] ^= 0x01;
+        fs::write(&container, &raw).unwrap();
+        let (ok, log) = sb.run(&["-q", "-d", "a.bin.csec", "-o", "out.bin"], None);
+        assert!(!ok, "flip at {pos} was accepted");
+        assert!(log.contains("authentication failed"), "{log}");
+        assert!(
+            !sb.work().join("out.bin").exists(),
+            "partial output at {pos}"
+        );
+    }
+}
+
+#[test]
+fn radix_detects_truncation() {
+    let sb = radix_sandbox("radix-truncate");
+    write_bytes(&sb.work().join("a.bin"), 2_200_000);
+    let (ok, log) = sb.run(
+        &["-q", "--algo", "radix", "--key", "rx", "-e", "a.bin"],
+        None,
+    );
+    assert!(ok, "{log}");
+    let container = sb.work().join("a.bin.csec");
+    let raw = fs::read(&container).unwrap();
+    // Cut away almost all of the last chunk (it also holds the manifest
+    // bytes, so a few remain): the end marker can no longer authenticate.
+    let cut = 2_200_000 - 2 * 1_048_576 + 80;
+    fs::write(&container, &raw[..raw.len() - cut]).unwrap();
+    let (ok, _) = sb.run(&["-q", "-d", "a.bin.csec", "-o", "out.bin"], None);
+    assert!(!ok, "truncated Radix container was accepted");
+    assert!(!sb.work().join("out.bin").exists());
+}
+
+#[test]
+fn radix_foreign_key_cannot_open_the_container() {
+    let sb = radix_sandbox("radix-foreign");
+    sb.run(
+        &["-q", "keygen", "mallory", "-t", "radix", "--no-passphrase"],
+        None,
+    );
+    fs::write(sb.work().join("a.txt"), "secret").unwrap();
+    let (ok, _) = sb.run(
+        &["-q", "-k", "--algo", "radix", "--key", "rx", "-e", "a.txt"],
+        None,
+    );
+    assert!(ok);
+    let (ok, log) = sb.run(
+        &["-q", "-d", "a.txt.csec", "--key", "mallory", "-o", "x.txt"],
+        None,
+    );
+    assert!(!ok);
+    assert!(log.contains("does not match"), "{log}");
+}
+
+#[test]
+fn radix_refuses_a_damaged_public_key() {
+    let sb = radix_sandbox("radix-badkey");
+    let pub_path = sb.root.join("cfg/keys/rx.pub");
+    let text = fs::read_to_string(&pub_path).unwrap_or_else(|_| {
+        panic!("public key not at {}", pub_path.display());
+    });
+    // Replace the key body with base64 of a key whose first ML-KEM
+    // coefficient is out of range (all bits set).
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut in_body = false;
+    let mut replaced = false;
+    for l in &lines {
+        if !in_body && l.is_empty() {
+            in_body = true;
+            out.push(l.to_string());
+            continue;
+        }
+        if in_body && !replaced && !l.starts_with("-----") {
+            // Base64 "////" decodes to 0xff 0xff 0xff: x25519 bytes first, so
+            // patch further in, where the ML-KEM key starts (byte 32).
+            let mut chars: Vec<char> = l.chars().collect();
+            for c in chars.iter_mut().skip(44).take(4) {
+                *c = '/';
+            }
+            out.push(chars.into_iter().collect());
+            replaced = true;
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    fs::write(&pub_path, out.join("\n") + "\n").unwrap();
+    fs::write(sb.work().join("a.txt"), "secret").unwrap();
+    let (ok, log) = sb.run(
+        &["-q", "--algo", "radix", "--key", "rx", "-e", "a.txt"],
+        None,
+    );
+    assert!(!ok, "damaged public key was accepted: {log}");
+    assert!(log.contains("invalid Radix public key"), "{log}");
+    assert!(sb.work().join("a.txt").exists());
+}

@@ -4,6 +4,7 @@ mod format;
 mod kdf;
 mod keys;
 mod ops;
+mod radix;
 mod stream;
 mod ui;
 

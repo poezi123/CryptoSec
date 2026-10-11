@@ -35,7 +35,7 @@ pub fn choose_key(entries: &[KeyEntry]) -> Result<KeyChoice> {
     }
     let mut items: Vec<String> = entries
         .iter()
-        .map(|k| format!("{:<16} {:<14} {}", k.name, k.algo.label(), k.fingerprint))
+        .map(|k| format!("{:<16} {:<16} {}", k.name, k.algo.label(), k.fingerprint))
         .collect();
     items.push("generate a new key pair".to_string());
     let idx = Select::with_theme(&ColorfulTheme::default())

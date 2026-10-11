@@ -294,6 +294,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sha3",
+ "subtle",
  "tar",
  "x25519-dalek",
  "zeroize",

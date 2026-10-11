@@ -12,6 +12,10 @@ pub const HOMEPAGE: &str = "https://github.com/poezi123/CryptoSec";
 pub const EXTENSION: &str = "csec";
 pub const CHUNK: usize = 1024 * 1024;
 pub const TAG: usize = 16;
+/// Containers with only standard ciphers keep version 1, so older releases
+/// still open them. Radix containers are version 2.
+pub const VERSION: u32 = 1;
+pub const VERSION_RADIX: u32 = 2;
 /// Upper bound for the preamble scan, so a random file is rejected quickly.
 const PREAMBLE_LIMIT: usize = 8 * 1024;
 
@@ -30,6 +34,8 @@ pub enum Cipher {
     Aes256Gcm,
     #[serde(rename = "chacha20-poly1305")]
     ChaCha20Poly1305,
+    #[serde(rename = "radix-cascade")]
+    RadixCascade,
 }
 
 impl Cipher {
@@ -37,6 +43,7 @@ impl Cipher {
         match self {
             Cipher::Aes256Gcm => "AES-256-GCM",
             Cipher::ChaCha20Poly1305 => "ChaCha20-Poly1305",
+            Cipher::RadixCascade => "Radix-Cascade (concept)",
         }
     }
 }
@@ -74,6 +81,15 @@ pub enum Recipient {
         wrap_nonce: String,
         wrapped: String,
     },
+    /// `kem_ct` is the ephemeral X25519 key (32 byte) followed by the
+    /// ML-KEM-768 ciphertext; `wrapped` is the data key under Radix-Cascade.
+    #[serde(rename = "radix-hybrid")]
+    Radix {
+        fingerprint: String,
+        kem_ct: String,
+        wrap_nonce: String,
+        wrapped: String,
+    },
 }
 
 impl Recipient {
@@ -83,6 +99,9 @@ impl Recipient {
             Recipient::Rsa { fingerprint, .. } => format!("RSA-4096 key {fingerprint}"),
             Recipient::X25519 { fingerprint, .. } => format!("X25519 key {fingerprint}"),
             Recipient::MlKem { fingerprint, .. } => format!("ML-KEM-768 key {fingerprint}"),
+            Recipient::Radix { fingerprint, .. } => {
+                format!("Radix hybrid key {fingerprint} (concept)")
+            }
         }
     }
 
@@ -91,7 +110,8 @@ impl Recipient {
             Recipient::Password { .. } => None,
             Recipient::Rsa { fingerprint, .. }
             | Recipient::X25519 { fingerprint, .. }
-            | Recipient::MlKem { fingerprint, .. } => Some(fingerprint),
+            | Recipient::MlKem { fingerprint, .. }
+            | Recipient::Radix { fingerprint, .. } => Some(fingerprint),
         }
     }
 }
@@ -161,10 +181,25 @@ pub fn read_header<R: Read>(input: &mut R) -> Result<(Meta, Vec<u8>)> {
     }
     let mut json = vec![0u8; len];
     input.read_exact(&mut json).context("truncated header")?;
-    let meta: Meta = serde_json::from_slice(&json).context("corrupt header")?;
-    if meta.version != 1 {
+    // The version is read on its own first, so a container from a newer
+    // release fails with a clear message instead of "corrupt header".
+    #[derive(Deserialize)]
+    struct Version {
+        version: u32,
+    }
+    let v: Version = serde_json::from_slice(&json).context("corrupt header")?;
+    if v.version != VERSION && v.version != VERSION_RADIX {
         bail!(
             "container version {} is not supported by this build",
+            v.version
+        );
+    }
+    let meta: Meta = serde_json::from_slice(&json).context("corrupt header")?;
+    let radix =
+        meta.cipher == Cipher::RadixCascade || matches!(meta.recipient, Recipient::Radix { .. });
+    if radix != (meta.version == VERSION_RADIX) {
+        bail!(
+            "corrupt header (version {} does not match the scheme)",
             meta.version
         );
     }

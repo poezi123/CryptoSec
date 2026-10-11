@@ -188,14 +188,25 @@ pub fn encrypt(input: &Path, opts: &Options) -> Result<()> {
                     wrap_nonce: B64.encode(w.nonce.unwrap_or_default()),
                     wrapped: B64.encode(w.wrapped),
                 },
+                KeyAlgo::Radix => Recipient::Radix {
+                    fingerprint: fp,
+                    kem_ct: B64.encode(w.kem.unwrap_or_default()),
+                    wrap_nonce: B64.encode(w.nonce.unwrap_or_default()),
+                    wrapped: B64.encode(w.wrapped),
+                },
             }
         }
     };
 
     let prefix = kdf::random_bytes::<7>();
+    let cipher = scheme.cipher();
     let meta = Meta {
-        version: 1,
-        cipher: scheme.cipher(),
+        version: if cipher == format::Cipher::RadixCascade {
+            format::VERSION_RADIX
+        } else {
+            format::VERSION
+        },
+        cipher,
         recipient,
         nonce_prefix: B64.encode(prefix),
         chunk_size: format::CHUNK as u32,
@@ -623,6 +634,12 @@ fn obtain_dek(meta: &Meta, opts: &Options) -> Result<[u8; 32]> {
                     B64.decode(wrapped)?,
                 ),
                 Recipient::MlKem {
+                    kem_ct,
+                    wrap_nonce,
+                    wrapped,
+                    ..
+                }
+                | Recipient::Radix {
                     kem_ct,
                     wrap_nonce,
                     wrapped,

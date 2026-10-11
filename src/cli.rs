@@ -41,7 +41,7 @@ pub struct Cli {
     #[arg(short = 'o', long = "output", value_name = "PATH")]
     pub output: Option<PathBuf>,
 
-    /// Scheme to use: aes, chacha, rsa, ecc, mlkem
+    /// Scheme to use: aes, chacha, rsa, ecc, mlkem, radix
     #[arg(long, value_name = "SCHEME")]
     pub algo: Option<String>,
 
@@ -83,7 +83,7 @@ pub enum Command {
     Keygen {
         /// Name of the key pair, asked for when left out
         name: Option<String>,
-        /// rsa, ecc or mlkem
+        /// rsa, ecc, mlkem or radix
         #[arg(short = 't', long = "type", value_name = "TYPE")]
         key_type: Option<String>,
         /// Store the private key without passphrase protection
@@ -104,12 +104,13 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    pub const MENU: [Scheme; 5] = [
+    pub const MENU: [Scheme; 6] = [
         Scheme::Password(Cipher::Aes256Gcm),
         Scheme::Password(Cipher::ChaCha20Poly1305),
         Scheme::KeyPair(KeyAlgo::Rsa4096),
         Scheme::KeyPair(KeyAlgo::X25519),
         Scheme::KeyPair(KeyAlgo::MlKem768),
+        Scheme::KeyPair(KeyAlgo::Radix),
     ];
 
     pub fn menu_entry(&self) -> String {
@@ -125,13 +126,19 @@ impl Scheme {
             Scheme::KeyPair(KeyAlgo::MlKem768) => {
                 "ML-KEM-768            key pair, post-quantum".into()
             }
+            Scheme::KeyPair(KeyAlgo::Radix) => {
+                "Radix (concept)       key pair, hybrid post-quantum, triple cascade".into()
+            }
+            Scheme::Password(Cipher::RadixCascade) => unreachable!("not offered in the menu"),
         }
     }
 
     pub fn cipher(&self) -> Cipher {
         match self {
             Scheme::Password(c) => *c,
-            // Key pairs only wrap the data key; the payload always uses AES-GCM.
+            // Radix encrypts the payload with its own cascade.
+            Scheme::KeyPair(KeyAlgo::Radix) => Cipher::RadixCascade,
+            // The other key pairs only wrap the data key; the payload uses AES-GCM.
             Scheme::KeyPair(_) => Cipher::Aes256Gcm,
         }
     }
@@ -145,7 +152,34 @@ impl Scheme {
             "rsa" | "rsa-4096" => Scheme::KeyPair(KeyAlgo::Rsa4096),
             "ecc" | "x25519" => Scheme::KeyPair(KeyAlgo::X25519),
             "mlkem" | "ml-kem" | "ml-kem-768" | "kyber" => Scheme::KeyPair(KeyAlgo::MlKem768),
-            other => bail!("unknown scheme '{other}' (use aes, chacha, rsa, ecc or mlkem)"),
+            "radix" => Scheme::KeyPair(KeyAlgo::Radix),
+            other => bail!("unknown scheme '{other}' (use aes, chacha, rsa, ecc, mlkem or radix)"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_lists_radix_as_a_concept_and_stays_aligned() {
+        let entries: Vec<String> = Scheme::MENU.iter().map(|s| s.menu_entry()).collect();
+        assert!(entries
+            .iter()
+            .any(|e| e.starts_with("Radix (concept)       key pair")));
+        // Every description starts in the same column.
+        for e in &entries {
+            assert_eq!(&e[21..22], " ", "{e}");
+            assert_ne!(&e[22..23], " ", "{e}");
+        }
+        assert_eq!(
+            Scheme::parse("radix").unwrap(),
+            Scheme::KeyPair(KeyAlgo::Radix)
+        );
+        assert_eq!(
+            Scheme::parse("radix").unwrap().cipher(),
+            Cipher::RadixCascade
+        );
     }
 }

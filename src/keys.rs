@@ -11,55 +11,36 @@ use ml_kem::{EncodedSizeUser, KemCore, MlKem768};
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::{Oaep, RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
-use sha3::Sha3_256;
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 use zeroize::Zeroize;
 
 use crate::kdf;
+use crate::radix::{cascade, hybrid};
 
 type MlEk = <MlKem768 as KemCore>::EncapsulationKey;
 type MlDk = <MlKem768 as KemCore>::DecapsulationKey;
 
-/// ML-KEM-768 sizes: encoded t-hat, encapsulation key, decapsulation key.
-const ML_T: usize = 1152;
-const ML_EK: usize = 1184;
-const ML_DK: usize = 2400;
-
-/// FIPS 203, 7.2: every 12 bit coefficient of t-hat must be below q = 3329.
-/// The ml-kem crate does not check this itself.
+/// FIPS 203, 7.2: every coefficient of t-hat must be below q = 3329. The
+/// ml-kem crate does not check this itself.
 fn check_ml_kem_public(ek: &[u8]) -> Result<()> {
-    if ek.len() != ML_EK {
-        bail!("damaged ML-KEM public key");
-    }
-    for c in ek[..ML_T].chunks_exact(3) {
-        let a = u16::from(c[0]) | (u16::from(c[1] & 0x0f) << 8);
-        let b = u16::from(c[1] >> 4) | (u16::from(c[2]) << 4);
-        if a >= 3329 || b >= 3329 {
-            bail!("invalid ML-KEM public key (coefficient out of range)");
-        }
-    }
-    Ok(())
+    hybrid::check_encapsulation_key(ek).map_err(|_| anyhow!("invalid ML-KEM public key"))
 }
 
-/// FIPS 203, 7.3: dk = dk_PKE || ek || H(ek) || z, and the stored H(ek) must
-/// match the embedded ek.
+/// FIPS 203, 7.3: the H(ek) stored in dk must match the embedded ek.
 fn check_ml_kem_private(dk: &[u8]) -> Result<()> {
-    if dk.len() != ML_DK {
-        bail!("damaged ML-KEM private key");
-    }
-    let ek = &dk[ML_T..ML_T + ML_EK];
-    check_ml_kem_public(ek).context("damaged ML-KEM private key")?;
-    if Sha3_256::digest(ek).as_slice() != &dk[ML_T + ML_EK..ML_T + ML_EK + 32] {
-        bail!("damaged ML-KEM private key (hash check failed)");
-    }
-    Ok(())
+    hybrid::check_decapsulation_key(dk).map_err(|_| anyhow!("damaged ML-KEM private key"))
 }
+
+/// Associated data for the data key wrapped under Radix-Cascade.
+const RADIX_WRAP_AD: &[u8] = b"cryptosec/radix/keywrap/v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyAlgo {
     Rsa4096,
     X25519,
     MlKem768,
+    /// X25519 + ML-KEM-768 hybrid, the key pair of the Radix scheme.
+    Radix,
 }
 
 impl KeyAlgo {
@@ -68,6 +49,7 @@ impl KeyAlgo {
             KeyAlgo::Rsa4096 => "rsa-4096",
             KeyAlgo::X25519 => "x25519",
             KeyAlgo::MlKem768 => "ml-kem-768",
+            KeyAlgo::Radix => "radix-hybrid",
         }
     }
 
@@ -76,6 +58,7 @@ impl KeyAlgo {
             KeyAlgo::Rsa4096 => "RSA-4096",
             KeyAlgo::X25519 => "X25519 (ECC)",
             KeyAlgo::MlKem768 => "ML-KEM-768",
+            KeyAlgo::Radix => "Radix (concept)",
         }
     }
 
@@ -84,6 +67,7 @@ impl KeyAlgo {
             "rsa-4096" | "rsa" => Ok(KeyAlgo::Rsa4096),
             "x25519" | "ecc" => Ok(KeyAlgo::X25519),
             "ml-kem-768" | "mlkem" | "ml-kem" => Ok(KeyAlgo::MlKem768),
+            "radix-hybrid" | "radix" => Ok(KeyAlgo::Radix),
             other => bail!("unknown key type '{other}'"),
         }
     }
@@ -93,12 +77,14 @@ pub enum PublicKey {
     Rsa(Box<RsaPublicKey>),
     X25519(XPublic),
     MlKem(Box<MlEk>),
+    Radix(Box<hybrid::PublicKey>),
 }
 
 pub enum PrivateKey {
     Rsa(Box<RsaPrivateKey>),
     X25519(StaticSecret),
     MlKem(Box<MlDk>),
+    Radix(Box<hybrid::SecretKey>),
 }
 
 impl PublicKey {
@@ -107,6 +93,7 @@ impl PublicKey {
             PublicKey::Rsa(_) => KeyAlgo::Rsa4096,
             PublicKey::X25519(_) => KeyAlgo::X25519,
             PublicKey::MlKem(_) => KeyAlgo::MlKem768,
+            PublicKey::Radix(_) => KeyAlgo::Radix,
         }
     }
 
@@ -115,6 +102,7 @@ impl PublicKey {
             PublicKey::Rsa(k) => k.to_public_key_der()?.as_bytes().to_vec(),
             PublicKey::X25519(k) => k.as_bytes().to_vec(),
             PublicKey::MlKem(k) => k.as_bytes().to_vec(),
+            PublicKey::Radix(k) => k.to_bytes(),
         })
     }
 
@@ -134,6 +122,10 @@ impl PublicKey {
                     .map_err(|_| anyhow!("damaged ML-KEM public key"))?;
                 PublicKey::MlKem(Box::new(MlEk::from_bytes(enc)))
             }
+            KeyAlgo::Radix => PublicKey::Radix(Box::new(
+                hybrid::PublicKey::from_bytes(raw)
+                    .map_err(|_| anyhow!("invalid Radix public key"))?,
+            )),
         })
     }
 
@@ -148,6 +140,7 @@ impl PrivateKey {
             PrivateKey::Rsa(_) => KeyAlgo::Rsa4096,
             PrivateKey::X25519(_) => KeyAlgo::X25519,
             PrivateKey::MlKem(_) => KeyAlgo::MlKem768,
+            PrivateKey::Radix(_) => KeyAlgo::Radix,
         }
     }
 
@@ -156,6 +149,7 @@ impl PrivateKey {
             PrivateKey::Rsa(k) => PublicKey::Rsa(Box::new(k.to_public_key())),
             PrivateKey::X25519(k) => PublicKey::X25519(XPublic::from(k)),
             PrivateKey::MlKem(k) => PublicKey::MlKem(Box::new(k.encapsulation_key().clone())),
+            PrivateKey::Radix(k) => PublicKey::Radix(Box::new(k.public().clone())),
         }
     }
 
@@ -164,6 +158,7 @@ impl PrivateKey {
             PrivateKey::Rsa(k) => k.to_pkcs8_der()?.as_bytes().to_vec(),
             PrivateKey::X25519(k) => k.to_bytes().to_vec(),
             PrivateKey::MlKem(k) => k.as_bytes().to_vec(),
+            PrivateKey::Radix(k) => k.to_bytes().to_vec(),
         })
     }
 
@@ -183,6 +178,10 @@ impl PrivateKey {
                     .map_err(|_| anyhow!("damaged ML-KEM private key"))?;
                 PrivateKey::MlKem(Box::new(MlDk::from_bytes(enc)))
             }
+            KeyAlgo::Radix => PrivateKey::Radix(Box::new(
+                hybrid::SecretKey::from_bytes(raw)
+                    .map_err(|_| anyhow!("damaged Radix private key"))?,
+            )),
         })
     }
 }
@@ -205,6 +204,7 @@ pub fn generate(algo: KeyAlgo) -> Result<PrivateKey> {
             let (dk, _) = MlKem768::generate(&mut rng);
             PrivateKey::MlKem(Box::new(dk))
         }
+        KeyAlgo::Radix => PrivateKey::Radix(Box::new(hybrid::SecretKey::generate())),
     })
 }
 
@@ -246,6 +246,22 @@ pub fn wrap(pk: &PublicKey, dek: &[u8; 32]) -> Result<Wrapped> {
             let (nonce, wrapped) = kdf::wrap_with_kek(&kek, dek)?;
             Ok(Wrapped {
                 kem: Some(ct),
+                nonce: Some(nonce),
+                wrapped,
+            })
+        }
+        PublicKey::Radix(k) => {
+            // The hybrid secret is the master key of a Radix-Cascade that
+            // wraps the data key, so the key wrap is a cascade as well.
+            let (ct, master) =
+                hybrid::encapsulate(k).map_err(|_| anyhow!("Radix encapsulation failed"))?;
+            let nonce = kdf::random_bytes::<12>();
+            let wrapped = cascade::seal(&master, &nonce, RADIX_WRAP_AD, dek)
+                .map_err(|_| anyhow!("wrapping the data key failed"))?;
+            let mut kem = ct.eph.to_vec();
+            kem.extend_from_slice(&ct.kem);
+            Ok(Wrapped {
+                kem: Some(kem),
                 nonce: Some(nonce),
                 wrapped,
             })
@@ -300,6 +316,28 @@ pub fn unwrap(
                 .map_err(|_| anyhow!("ML-KEM decapsulation failed"))?;
             let kek = kdf::hkdf(shared.as_slice(), b"cryptosec/ml-kem-768/v1", &[kem]);
             kdf::unwrap_with_kek(&kek, nonce, wrapped)
+        }
+        PrivateKey::Radix(k) => {
+            let kem = kem.ok_or_else(|| anyhow!("header is missing the KEM ciphertext"))?;
+            if kem.len() != 32 + hybrid::ML_CT {
+                bail!("damaged Radix key exchange data");
+            }
+            let ct = hybrid::HybridCiphertext {
+                eph: kem[..32].try_into().unwrap(),
+                kem: kem[32..].to_vec(),
+            };
+            let nonce = nonce.ok_or_else(|| anyhow!("header is missing the wrap nonce"))?;
+            let nonce: [u8; 12] = nonce.try_into().context("damaged wrap nonce")?;
+            let master = hybrid::decapsulate(k, &ct)
+                .map_err(|_| anyhow!("this private key does not fit the container"))?;
+            let mut plain = cascade::open(&master, &nonce, RADIX_WRAP_AD, wrapped)
+                .map_err(|_| anyhow!("wrong key - the data key did not unwrap"))?;
+            let out: [u8; 32] = plain
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow!("unexpected data key length"))?;
+            plain.zeroize();
+            Ok(out)
         }
     }
 }
@@ -586,7 +624,7 @@ mod tests {
     #[test]
     fn ml_kem_private_key_with_wrong_hash_is_refused() {
         let (dk, _) = ml_kem_pair();
-        for pos in [ML_T + ML_EK, ML_T + 10] {
+        for pos in [hybrid::ML_T + hybrid::ML_EK, hybrid::ML_T + 10] {
             let mut bad = dk.clone();
             bad[pos] ^= 1;
             assert!(
