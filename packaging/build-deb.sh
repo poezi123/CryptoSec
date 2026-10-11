@@ -35,7 +35,9 @@ Homepage: https://github.com/poezi123/CryptoSec
 Description: File and directory encryption for the command line
  cryptosec packs a file or a whole directory into a single encrypted
  container. AES-256-GCM and ChaCha20-Poly1305 are available with a
- password, RSA-4096, X25519 and ML-KEM-768 with a key pair.
+ password, RSA-4096, X25519 and ML-KEM-768 with a key pair, and the
+ experimental Radix scheme combines X25519 with ML-KEM-768 and a triple
+ AEAD cascade.
  .
  Containers start with a readable banner, so opening one in an editor
  says what it is instead of showing binary noise.

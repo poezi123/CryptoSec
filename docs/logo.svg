@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2a41"/>
+      <stop offset="1" stop-color="#0c1422"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#0e8a80"/>
+    </linearGradient>
+    <linearGradient id="shackle" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e2e8f0"/>
+      <stop offset="1" stop-color="#94a3b8"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <path d="M176 236 V178 a80 80 0 0 1 160 0 V236" fill="none" stroke="url(#shackle)"
+        stroke-width="40" stroke-linecap="round"/>
+  <rect x="120" y="220" width="272" height="208" rx="44" fill="url(#body)"/>
+  <rect x="120" y="220" width="272" height="208" rx="44" fill="none" stroke="#5eead4"
+        stroke-opacity="0.35" stroke-width="4"/>
+  <circle cx="256" cy="306" r="30" fill="#0c1422"/>
+  <path d="M242 318 L234 376 H278 L270 318 Z" fill="#0c1422"/>
+</svg>

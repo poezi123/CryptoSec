@@ -1,7 +1,28 @@
-# CryptoSec
+<p align="center">
+  <img src="docs/logo.png" width="128" alt="CryptoSec logo">
+</p>
 
-A small command line tool that encrypts a file or a whole directory into a
-single container, and decrypts it again. Written in Rust, Linux only.
+<h1 align="center">CryptoSec</h1>
+
+<p align="center">
+  <b>Encrypt a file or a whole directory into one container, and back.</b><br>
+  A small command line tool for Linux, written in Rust.
+</p>
+
+<p align="center">
+  <a href="https://github.com/poezi123/CryptoSec/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/poezi123/CryptoSec?label=download&color=0E9C92"></a>
+  <a href="https://github.com/poezi123/CryptoSec/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/poezi123/CryptoSec/total?color=1B2A41"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-222222">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-555555"></a>
+</p>
+
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="#installation">Installation</a> ·
+  <a href="#usage">Usage</a> ·
+  <a href="#schemes">Schemes</a> ·
+  <a href="#container-layout">Container layout</a>
+</p>
 
 ```
 $ cryptosec -e notes.txt
@@ -24,7 +45,42 @@ Get it at: https://github.com/poezi123/CryptoSec
 ...
 ```
 
-## Install
+## Download
+
+<a id="download"></a>
+
+| System | Package | |
+|---|---|---|
+| **Arch Linux**, CachyOS, Manjaro, EndeavourOS | `cryptosec-0.3.0-1-x86_64.pkg.tar.zst` | [Download](https://github.com/poezi123/CryptoSec/releases/download/v0.3.0/cryptosec-0.3.0-1-x86_64.pkg.tar.zst) |
+| **Ubuntu 20.04+**, Debian 11+, Linux Mint 20+ | `cryptosec_0.3.0_amd64.deb` | [Download](https://github.com/poezi123/CryptoSec/releases/download/v0.3.0/cryptosec_0.3.0_amd64.deb) |
+| **Any other Linux** (Fedora, openSUSE, Alpine, …) | `cryptosec-0.3.0-linux-x86_64.tar.gz` | [Download](https://github.com/poezi123/CryptoSec/releases/download/v0.3.0/cryptosec-0.3.0-linux-x86_64.tar.gz) |
+
+All versions and checksums (`SHA256SUMS.txt`) are on the
+[releases page](https://github.com/poezi123/CryptoSec/releases). The
+`.tar.gz` holds a static binary that runs on any x86_64 Linux.
+
+## Installation
+
+<a id="installation"></a>
+
+```
+sudo pacman -U cryptosec-0.3.0-1-x86_64.pkg.tar.zst     # Arch based
+sudo apt install ./cryptosec_0.3.0_amd64.deb            # Debian, Ubuntu, Mint
+```
+
+Any other Linux:
+
+```
+tar xzf cryptosec-0.3.0-linux-x86_64.tar.gz
+cd cryptosec-0.3.0-linux-x86_64
+sudo install -Dm755 cryptosec /usr/local/bin/cryptosec
+sudo install -Dm644 cryptosec.1 /usr/local/share/man/man1/cryptosec.1
+```
+
+The packages also register `.csec` files with the desktop, so double-clicking
+a container opens it in a terminal.
+
+## Build from source
 
 ```
 git clone https://github.com/poezi123/CryptoSec.git
