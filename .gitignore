@@ -2,3 +2,9 @@
 *.deb
 *.pkg.tar.zst
 *.csec
+# Containers written by older releases, needed by the compatibility test.
+!/tests/fixtures/*.csec
+/docs/radix.pzc
+/docs/radix.pdf
+/docs/radix-render/
+/tests/radix/
